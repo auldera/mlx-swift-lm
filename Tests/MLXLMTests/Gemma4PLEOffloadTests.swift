@@ -2,11 +2,11 @@
 
 import Foundation
 import MLX
-import MLXLMCommon
 import MLXNN
 import Testing
 
 @_spi(GemmaEncoder) @testable import MLXLLM
+@testable import MLXLMCommon
 
 struct Gemma4PLEOffloadTests {
     private static let tableName = "language_model.model.embed_tokens_per_layer"
@@ -120,6 +120,43 @@ struct Gemma4PLEOffloadTests {
         #expect(Self.bits(actual) == Self.bits(expected))
     }
 
+    @Test("Loading an offloaded model never reads the table")
+    func loadingSkipsTheOffloadedTable() async throws {
+        let config = try JSONDecoder().decode(
+            Gemma4Configuration.self,
+            from: Data(#"{"model_type": "gemma4", "text_config": \#(Self.textJSON)}"#.utf8))
+        let resident = Gemma4Model(config)
+        eval(resident)
+        #expect(resident.excludedCheckpointNamespaces.isEmpty)
+        let table = UncheckedTable(
+            embedding: try #require(resident.languageModel.model.embedTokensPerLayer))
+        let directory = try Self.checkpoint(
+            Dictionary(uniqueKeysWithValues: resident.parameters().flattened()), quantization: nil)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let provider: Gemma4PLEOffload.Provider = { table.embedding($0) }
+        let offloaded = Gemma4PLEOffload.$provider.withValue(provider) { Gemma4Model(config) }
+        #expect(
+            offloaded.excludedCheckpointNamespaces == [
+                "language_model.model.embed_tokens_per_layer",
+                "model.language_model.embed_tokens_per_layer",
+            ])
+        let url = directory.appendingPathComponent("model.safetensors")
+        let all = Set(try loadModelCheckpoint(urls: [url]).weights.keys)
+        let read = try loadModelCheckpoint(
+            urls: [url], excludedNamespaces: offloaded.excludedCheckpointNamespaces
+        ).weights.keys
+        #expect(all.contains("language_model.model.embed_tokens_per_layer.weight"))
+        #expect(
+            Set(read) == all.subtracting(["language_model.model.embed_tokens_per_layer.weight"]))
+
+        try await loadWeights(modelDirectory: directory, model: offloaded)
+        let input = MLXArray([1, 2, 3, 4] as [Int32]).reshaped(1, 4)
+        let expected = resident(input, cache: try resident.newCache(parameters: nil))
+        let actual = offloaded(input, cache: try offloaded.newCache(parameters: nil))
+        #expect(Self.bits(actual) == Self.bits(expected))
+    }
+
     @Test("A model created outside a provider binding builds the table")
     func unboundProviderKeepsTheTable() throws {
         let model = Gemma4TextModel(try Self.configuration())
@@ -161,33 +198,36 @@ struct Gemma4PLEOffloadTests {
     }
 
     private static func configuration() throws -> Gemma4TextConfiguration {
-        let json = """
-            {
-              "model_type": "gemma4_text",
-              "hidden_size": 16,
-              "num_hidden_layers": 2,
-              "intermediate_size": 32,
-              "num_attention_heads": 2,
-              "head_dim": 32,
-              "global_head_dim": 32,
-              "global_partial_rotary_factor": 0.25,
-              "rms_norm_eps": 0.000001,
-              "vocab_size": 32,
-              "vocab_size_per_layer_input": 32,
-              "num_key_value_heads": 1,
-              "num_global_key_value_heads": 1,
-              "num_kv_shared_layers": 0,
-              "hidden_size_per_layer_input": 8,
-              "sliding_window": 8,
-              "sliding_window_pattern": 1,
-              "max_position_embeddings": 64,
-              "attention_k_eq_v": false,
-              "final_logit_softcapping": 30.0,
-              "use_double_wide_mlp": false,
-              "layer_types": ["full_attention", "full_attention"],
-              "tie_word_embeddings": true
-            }
-            """
-        return try JSONDecoder().decode(Gemma4TextConfiguration.self, from: Data(json.utf8))
+        try JSONDecoder().decode(Gemma4TextConfiguration.self, from: Data(textJSON.utf8))
+    }
+
+    private static var textJSON: String {
+        """
+        {
+          "model_type": "gemma4_text",
+          "hidden_size": 16,
+          "num_hidden_layers": 2,
+          "intermediate_size": 32,
+          "num_attention_heads": 2,
+          "head_dim": 32,
+          "global_head_dim": 32,
+          "global_partial_rotary_factor": 0.25,
+          "rms_norm_eps": 0.000001,
+          "vocab_size": 32,
+          "vocab_size_per_layer_input": 32,
+          "num_key_value_heads": 1,
+          "num_global_key_value_heads": 1,
+          "num_kv_shared_layers": 0,
+          "hidden_size_per_layer_input": 8,
+          "sliding_window": 8,
+          "sliding_window_pattern": 1,
+          "max_position_embeddings": 64,
+          "attention_k_eq_v": false,
+          "final_logit_softcapping": 30.0,
+          "use_double_wide_mlp": false,
+          "layer_types": ["full_attention", "full_attention"],
+          "tie_word_embeddings": true
+        }
+        """
     }
 }

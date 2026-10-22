@@ -876,6 +876,11 @@ public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
         return gemma4LogitSoftcap(out, config.finalLogitSoftcapping)
     }
 
+    /// An offloaded table is never read, so loading never holds it.
+    public var excludedCheckpointNamespaces: [String] {
+        model.perLayerEmbeddingProvider == nil ? [] : ["model.embed_tokens_per_layer"]
+    }
+
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         let weights = filterLMHeadWeights(
             from: weights, tiedWordEmbeddings: config.tieWordEmbeddings)
