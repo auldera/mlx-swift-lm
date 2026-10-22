@@ -692,6 +692,8 @@ private class Gemma4TextExperts: Module {
     @ModuleInfo(key: "embed_tokens_per_layer") var embedTokensPerLayer: Embedding?
     @ModuleInfo(key: "per_layer_model_projection") var perLayerModelProjection: Linear?
     @ModuleInfo(key: "per_layer_projection_norm") var perLayerProjectionNorm: RMSNorm?
+    /// Serves the rows of `embed_tokens_per_layer` in place of the table, see ``Gemma4PLEOffload``.
+    let perLayerEmbeddingProvider: Gemma4PLEOffload.Provider?
 
     // KV sharing mapping: for each layer, which earlier layer provides KVs
     let previousKvs: [Int]
@@ -712,9 +714,12 @@ private class Gemma4TextExperts: Module {
         // PLE
         if config.hiddenSizePerLayerInput > 0 {
             self.perLayerProjectionScale = pow(Float(config.hiddenSize), -0.5)
-            self._embedTokensPerLayer.wrappedValue = Embedding(
-                embeddingCount: config.vocabSizePerLayerInput,
-                dimensions: config.numHiddenLayers * config.hiddenSizePerLayerInput)
+            self.perLayerEmbeddingProvider = Gemma4PLEOffload.provider
+            if perLayerEmbeddingProvider == nil {
+                self._embedTokensPerLayer.wrappedValue = Embedding(
+                    embeddingCount: config.vocabSizePerLayerInput,
+                    dimensions: config.numHiddenLayers * config.hiddenSizePerLayerInput)
+            }
             self._perLayerModelProjection.wrappedValue = Linear(
                 config.hiddenSize,
                 config.numHiddenLayers * config.hiddenSizePerLayerInput,
@@ -723,6 +728,7 @@ private class Gemma4TextExperts: Module {
                 dimensions: config.hiddenSizePerLayerInput, eps: config.rmsNormEps)
         } else {
             self.perLayerProjectionScale = 1.0
+            self.perLayerEmbeddingProvider = nil
         }
 
         // Build KV-sharing map
@@ -756,14 +762,13 @@ private class Gemma4TextExperts: Module {
         // Compute per-layer inputs (PLE)
         var perLayerInputs: [MLXArray?]
         if hiddenSizePerLayerInput > 0,
-            let embedPerLayer = embedTokensPerLayer,
+            let tokenRows = embedTokensPerLayer.map({ $0(inputs) })
+                ?? perLayerEmbeddingProvider?(inputs),
             let modelProj = perLayerModelProjection,
             let projNorm = perLayerProjectionNorm
         {
             // Token-based PLE
-            let tokenPLE =
-                embedPerLayer(inputs)
-                * Float(config.hiddenSizePerLayerInput).squareRoot()
+            let tokenPLE = tokenRows * Float(config.hiddenSizePerLayerInput).squareRoot()
 
             // [B, L, numLayers * hiddenSizePerLayerInput] -> [B, L, numLayers, hiddenSizePerLayerInput]
             let reshapedTokenPLE = tokenPLE.reshaped(
@@ -882,6 +887,9 @@ public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
         var sanitized = [String: MLXArray]()
         for (key, value) in weights {
             let k = key
+            if model.perLayerEmbeddingProvider != nil, k.contains("embed_tokens_per_layer.") {
+                continue
+            }
             // Skip vision/audio/rotary weights
             if k.contains("self_attn.rotary_emb")
                 || k.contains("input_max")
