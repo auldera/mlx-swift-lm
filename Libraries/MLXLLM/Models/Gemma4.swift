@@ -64,11 +64,22 @@ public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
         languageModel(inputs, cache: cache)
     }
 
-    /// The MLX and Hugging Face spellings of the text model's excluded namespaces.
+    private static let unusedMultimodalNamespaces = [
+        "vision_tower",
+        "multi_modal_projector",
+        "audio_tower",
+        "embed_audio",
+        "embed_vision",
+        "vision_embedder",
+    ]
+
+    /// The MLX and Hugging Face spellings of the model's unused multimodal and text-model
+    /// excluded namespaces.
     public var excludedCheckpointNamespaces: [String] {
-        languageModel.excludedCheckpointNamespaces.flatMap {
-            ["language_model.\($0)", "model.language_model.\($0.dropFirst("model.".count))"]
-        }
+        Self.unusedMultimodalNamespaces.flatMap { [$0, "model.\($0)"] }
+            + languageModel.excludedCheckpointNamespaces.flatMap {
+                ["language_model.\($0)", "model.language_model.\($0.dropFirst("model.".count))"]
+            }
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

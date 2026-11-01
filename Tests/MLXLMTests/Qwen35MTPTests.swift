@@ -629,6 +629,45 @@ struct Qwen35CheckpointLoadingTests {
         #expect(Set(target.parameters().flattened().map(\.0)) == expectedKeys)
     }
 
+    @Test(arguments: [false, true])
+    func textTargetDoesNotReadMultimodalOrMTPNamespaces(wrapped: Bool) throws {
+        let data = try fixtureConfiguration(vision: false, standalone: false, bits: nil)
+        let config = try JSONDecoder().decode(MLXLLM.Qwen35Configuration.self, from: data)
+        let target: any BaseLanguageModel =
+            wrapped ? MLXLLM.Qwen35Model(config) : MLXLLM.Qwen35TextModel(config.textConfig)
+        let expectedExcluded = [
+            "mtp", "language_model.mtp",
+            "vision_tower", "model.vision_tower",
+            "visual", "model.visual",
+            "audio_tower", "model.audio_tower",
+            "embed_vision", "model.embed_vision",
+            "embed_audio", "model.embed_audio",
+            "multi_modal_projector", "model.multi_modal_projector",
+            "vision_embedder", "model.vision_embedder",
+        ]
+        #expect(target.excludedCheckpointNamespaces == expectedExcluded)
+
+        var weights = Dictionary(uniqueKeysWithValues: target.parameters().flattened())
+        let expectedKeys = Set(weights.keys)
+        for namespace in expectedExcluded {
+            weights["\(namespace).layer.weight"] = MLXArray.zeros([8, 8])
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("model.safetensors")
+        try save(arrays: weights, metadata: ["format": "mlx"], url: url)
+
+        let read = try loadModelCheckpoint(
+            urls: [url], excludedNamespaces: target.excludedCheckpointNamespaces
+        ).weights.keys
+        #expect(Set(read) == expectedKeys)
+
+        try loadWeights(modelDirectory: directory, model: target)
+        #expect(Set(target.parameters().flattened().map(\.0)) == expectedKeys)
+    }
+
     @Test
     func conversionRoundTripRetainsNormConvention() async throws {
         let fixture = try await makeFixture(vision: false, standalone: false, prefix: "mtp.")

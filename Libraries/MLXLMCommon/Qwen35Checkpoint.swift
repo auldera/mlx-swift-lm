@@ -31,6 +31,19 @@ package struct Qwen35CheckpointPolicy: Sendable {
             "model", "language_model.model", "language_model.lm_head", "lm_head",
             "vision_tower", "visual",
         ])
+    private static let unusedMultimodalNamespaces = [
+        "vision_tower",
+        "visual",
+        "audio_tower",
+        "embed_vision",
+        "embed_audio",
+        "multi_modal_projector",
+        "vision_embedder",
+    ]
+    /// Multimodal and MTP namespaces that text-only Qwen 3.5 targets drop in `prepareTarget`,
+    /// so `loadModelCheckpoint` need not read or evaluate them.
+    package static let textTargetExcludedCheckpointNamespaces: [String] =
+        mtpComponent.namespaces + unusedMultimodalNamespaces.flatMap { [$0, "model.\($0)"] }
     private static let normSuffixes = [
         "mtp.norm.weight", "mtp.pre_fc_norm_embedding.weight", "mtp.pre_fc_norm_hidden.weight",
         ".input_layernorm.weight", ".post_attention_layernorm.weight",
@@ -64,10 +77,9 @@ package struct Qwen35CheckpointPolicy: Sendable {
                 .replacePrefix("visual", with: "vision_tower"),
             ]
         } else {
-            rules += [
-                .excludePrefix("model.visual"), .excludePrefix("vision_tower"),
-                .excludePrefix("visual"),
-            ]
+            rules += unusedMultimodalNamespaces.flatMap {
+                [.excludePrefix("model.\($0)"), .excludePrefix($0)]
+            }
         }
         rules.append(.replacePrefix("model.language_model", with: "model"))
         if layout == .text {

@@ -120,6 +120,15 @@ struct Gemma4PLEOffloadTests {
         #expect(Self.bits(actual) == Self.bits(expected))
     }
 
+    private static let multimodalExcludedNamespaces = [
+        "vision_tower", "model.vision_tower",
+        "multi_modal_projector", "model.multi_modal_projector",
+        "audio_tower", "model.audio_tower",
+        "embed_audio", "model.embed_audio",
+        "embed_vision", "model.embed_vision",
+        "vision_embedder", "model.vision_embedder",
+    ]
+
     @Test("Loading an offloaded model never reads the table")
     func loadingSkipsTheOffloadedTable() async throws {
         let config = try JSONDecoder().decode(
@@ -127,7 +136,7 @@ struct Gemma4PLEOffloadTests {
             from: Data(#"{"model_type": "gemma4", "text_config": \#(Self.textJSON)}"#.utf8))
         let resident = Gemma4Model(config)
         eval(resident)
-        #expect(resident.excludedCheckpointNamespaces.isEmpty)
+        #expect(resident.excludedCheckpointNamespaces == Self.multimodalExcludedNamespaces)
         let table = UncheckedTable(
             embedding: try #require(resident.languageModel.model.embedTokensPerLayer))
         let directory = try Self.checkpoint(
@@ -137,10 +146,11 @@ struct Gemma4PLEOffloadTests {
         let provider: Gemma4PLEOffload.Provider = { table.embedding($0) }
         let offloaded = Gemma4PLEOffload.$provider.withValue(provider) { Gemma4Model(config) }
         #expect(
-            offloaded.excludedCheckpointNamespaces == [
-                "language_model.model.embed_tokens_per_layer",
-                "model.language_model.embed_tokens_per_layer",
-            ])
+            offloaded.excludedCheckpointNamespaces
+                == Self.multimodalExcludedNamespaces + [
+                    "language_model.model.embed_tokens_per_layer",
+                    "model.language_model.embed_tokens_per_layer",
+                ])
         let url = directory.appendingPathComponent("model.safetensors")
         let all = Set(try loadModelCheckpoint(urls: [url]).weights.keys)
         let read = try loadModelCheckpoint(
@@ -154,6 +164,35 @@ struct Gemma4PLEOffloadTests {
         let input = MLXArray([1, 2, 3, 4] as [Int32]).reshaped(1, 4)
         let expected = resident(input, cache: try resident.newCache(parameters: nil))
         let actual = offloaded(input, cache: try offloaded.newCache(parameters: nil))
+        #expect(Self.bits(actual) == Self.bits(expected))
+    }
+
+    @Test("Loading a Gemma 4 text model never reads vision or audio namespaces")
+    func loadingSkipsUnusedMultimodalNamespaces() async throws {
+        let config = try JSONDecoder().decode(
+            Gemma4Configuration.self,
+            from: Data(#"{"model_type": "gemma4", "text_config": \#(Self.textJSON)}"#.utf8))
+        let reference = Gemma4Model(config)
+        eval(reference)
+        let textParameters = Dictionary(uniqueKeysWithValues: reference.parameters().flattened())
+        var checkpointArrays = textParameters
+        for namespace in Self.multimodalExcludedNamespaces {
+            checkpointArrays["\(namespace).layer.weight"] = MLXArray.ones([4, 4])
+        }
+        let directory = try Self.checkpoint(checkpointArrays, quantization: nil)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("model.safetensors")
+        let target = Gemma4Model(config)
+        let read = try loadModelCheckpoint(
+            urls: [url], excludedNamespaces: target.excludedCheckpointNamespaces
+        ).weights.keys
+        #expect(Set(read) == Set(textParameters.keys))
+
+        try await loadWeights(modelDirectory: directory, model: target)
+        let input = MLXArray([1, 2, 3, 4] as [Int32]).reshaped(1, 4)
+        let expected = reference(input, cache: try reference.newCache(parameters: nil))
+        let actual = target(input, cache: try target.newCache(parameters: nil))
         #expect(Self.bits(actual) == Self.bits(expected))
     }
 
