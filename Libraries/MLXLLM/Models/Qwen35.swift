@@ -1210,6 +1210,10 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
         }
     }
 
+    public var excludedCheckpointNamespaces: [String] {
+        Qwen35CheckpointPolicy.textTargetExcludedCheckpointNamespaces
+    }
+
     public func prepareCheckpoint(_ checkpoint: ModelCheckpoint) throws -> ModelCheckpoint {
         var checkpoint = try Qwen35CheckpointPolicy.prepareTarget(
             checkpoint, layout: .text, tiedWordEmbeddings: configuration.tieWordEmbeddings)
@@ -1330,6 +1334,10 @@ public class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider {
 
     public func prepare() throws {
         try languageModel.prepare()
+    }
+
+    public var excludedCheckpointNamespaces: [String] {
+        Qwen35CheckpointPolicy.textTargetExcludedCheckpointNamespaces
     }
 
     public func prepareCheckpoint(_ checkpoint: ModelCheckpoint) throws -> ModelCheckpoint {
